@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Closed Box Corridor Gallery – My Works</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #ffffff; overflow: hidden; font-family: system-ui, sans-serif; }
+    .info {
+      position: fixed;
+      left: 10px;
+      top: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      border-radius: 4px;
+      z-index: 10;
+      user-select: none;
+    }
+         .detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      /* 처음엔 안 보이게 */
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+
+      /* 부드러운 나타남/사라짐 */
+      transition: opacity 0.35s ease;
+    }
+
+    /* 열렸을 때 상태 */
+    .detail-overlay.show {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .detail-inner {
+      position: relative;
+      width: 90vw;
+      height: 80vh;
+      display: flex;
+      gap: 32px;
+      color: #fff;
+      font-family: system-ui, sans-serif;
+
+      /* 살짝 아래에서 위로 올라오는 느낌 */
+      transform: translateY(20px);
+      opacity: 0;
+      transition: transform 0.35s ease, opacity 0.35s ease;
+    }
+
+    .detail-overlay.show .detail-inner {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .detail-left {
+      flex: 3;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .detail-left img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .detail-right {
+      flex: 2;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding-right: 16px;
+    }
+
+    .detail-right h2 {
+      margin: 0 0 12px;
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    .detail-right p {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.7;
+      white-space: pre-line;
+      color: #ddd;
+    }
+
+    .detail-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 20px;
+      cursor: pointer;
+    }
+
+    .detail-close:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+
+  </style>
+</head>
+<body>
+    <div class="info">
+    마우스 드래그: 시점 회전 · W/S: 앞/뒤 · A/D: 좌우 이동<br>
+    양쪽 벽에 지하님의 그림 10장씩 전시
+  </div>
+
+  <!-- ✅ 전체 화면 디테일 뷰 오버레이 -->
+  <div class="detail-overlay">
+    <div class="detail-inner">
+      <button class="detail-close" type="button">×</button>
+      <div class="detail-left">
+        <img id="detail-img" src="" alt="선택된 작품" />
+      </div>
+      <div class="detail-right">
+        <h2 id="detail-title">작품을 선택해 주세요</h2>
+        <p id="detail-desc">
+          복도 양쪽 벽의 그림을 클릭하면 이 영역에 제목과 설명이 표시됩니다.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+
+ <script>
+  // ===== 렌더러 & 씬 & 카메라 =====
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setClearColor(0x000000, 1); // 🔥 전체 배경을 까맣게
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+
+  // 🔥 아주 약한 전체 조명
+  const ambient = new THREE.AmbientLight(0xffffff, 0.05);
+  scene.add(ambient);
+
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  const clickableFrames = [];
+
+  // 디테일 오버레이 DOM
+  const overlay      = document.querySelector(".detail-overlay");
+  const detailImg    = document.getElementById("detail-img");
+  const detailTitle  = document.getElementById("detail-title");
+  const detailDesc   = document.getElementById("detail-desc");
+  const detailClose  = document.querySelector(".detail-close");
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+
+  // 시점: 그림 높이와 같게 (y = 7), 입구 쪽에서 시작
+  const EYE_HEIGHT = 7;
+  camera.position.set(0, EYE_HEIGHT, -8);
+
+  let yaw = 0;
+  let pitch = 0;
+
+  // ===== 통짜 복도(박스) =====
+  const corridorWidth = 20;
+  const corridorHeight = 12;
+  const corridorDepth = 100;
+
+  const corridorGeo = new THREE.BoxGeometry(
+    corridorWidth,
+    corridorHeight,
+    corridorDepth
+  );
+
+  const corridorMat = new THREE.MeshStandardMaterial({
+    color: 0x111111,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.BackSide
+  });
+
+  // 🔥 실제 복도 메쉬를 만들어서 scene에 추가 (이게 없어서 그동안 벽이 안 보였음)
+  const corridor = new THREE.Mesh(corridorGeo, corridorMat);
+  corridor.position.set(0, corridorHeight / 2, -corridorDepth / 2);
+  scene.add(corridor);
+
+  // 바닥
+    // ===== 바닥 =====
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(corridorWidth, corridorDepth),
+    new THREE.MeshStandardMaterial({
+      color: 0x0f0f0f,
+      roughness: 1,
+      metalness: 0
+    })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(0, 0.001, -corridorDepth / 2);
+  scene.add(floor);
+
+  // =========================
+  // ✅ 복도 끝 벽 비디오 스크린
+  // =========================
+
+  // 1) HTMLVideoElement 생성
+  const endVideo = document.createElement("video");
+  endVideo.src = "./img/pong.mp4";       // 👉 실제 파일 경로 확인!
+  endVideo.muted = true;                 // 자동재생 위해 반드시 muted
+  endVideo.loop = true;                  // 무한 반복
+  endVideo.playsInline = true;           // 모바일 전체화면 방지
+  endVideo.autoplay = true;
+  endVideo.crossOrigin = "anonymous";
+
+  // 자동재생 강제 시도 + 상호작용 후 재시도
+  function tryPlayEndVideo() {
+    endVideo.play().catch(() => {
+      // 실패해도 에러만 먹고 끝 (콘솔에 안 나와서 조용함)
+    });
+  }
+
+  // 메타데이터 로드되면 한 번 재생 시도
+  endVideo.addEventListener("loadeddata", () => {
+    tryPlayEndVideo();
+  });
+
+  // 사용자가 아무거나 한 번이라도 클릭하면 다시 재생 시도 (정책 우회)
+  window.addEventListener("click", () => {
+    if (endVideo.paused) {
+      tryPlayEndVideo();
+    }
+  }, { once: true });
+
+  // 2) VideoTexture로 변환
+  const endVideoTex = new THREE.VideoTexture(endVideo);
+  endVideoTex.minFilter = THREE.LinearFilter;
+  endVideoTex.magFilter = THREE.LinearFilter;
+  endVideoTex.generateMipmaps = false;
+  endVideoTex.colorSpace = THREE.SRGBColorSpace ?? THREE.sRGBEncoding;
+
+  const endVideoMat = new THREE.MeshBasicMaterial({
+  map: endVideoTex,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 0.2,   // ✅ 처음엔 어둡게 시작
+  toneMapped: false
+});
+
+
+  // 3) 화면 비율(16:9 기준)로 Plane 만들기
+  const screenWidth = corridorWidth * 0.7;      // 복도 폭의 70% 정도 차지
+  const screenHeight = (screenWidth / 16) * 9;  // 16:9 비율
+
+  const endScreenGeo = new THREE.PlaneGeometry(screenWidth, screenHeight);
+  const endScreen = new THREE.Mesh(endScreenGeo, endVideoMat);
+
+  // 복도 끝 벽 위치 (제일 끝 z 쪽에 살짝 띄워서 배치)
+  endScreen.position.set(
+    0,
+    corridorHeight / 2,          // 세로 중앙 근처
+    -corridorDepth + 0.5         // 맨 끝에서 약간 더 앞으로 (벽보다 살짝 안쪽)
+  );
+
+  // Plane 기본 방향(Z+) 그대로 두기
+  // (side: DoubleSide라 방향 틀려도 보임)
+  // endScreen.rotation.y = Math.PI; // 이건 일단 주석 처리
+
+  scene.add(endScreen);
+
+
+
+  // ===== 액자 생성 함수 (텍스처 사용 + 비율 자동 맞추기 + 클릭 + 스포트라이트) =====
+  function createFrame(texture, index, x, y, z, rotY) {
+  const group = new THREE.Group();
+
+  // 이미지 비율 계산
+  let aspect = 1;
+  if (texture.image && texture.image.width && texture.image.height) {
+    aspect = texture.image.width / texture.image.height;
+  }
+
+  const baseHeight = 3.0;
+  const picH = baseHeight;
+  const picW = baseHeight * aspect;
+
+  // 🎨 그림 메쉬 (조명 받는 재질)
+  const picGeo = new THREE.PlaneGeometry(1, 1);
+  const picMat = new THREE.MeshStandardMaterial({
+    map: texture,
+    roughness: 0.7,
+    metalness: 0
+  });
+  const picture = new THREE.Mesh(picGeo, picMat);
+  picture.scale.set(picW, picH, 1);
+  picture.position.z = 0.02;
+  group.add(picture);
+
+  // 그룹 위치/회전
+  group.position.set(x, y, z);
+  group.rotation.y = rotY;
+
+  // 클릭용 인덱스
+  group.userData.index = index;
+  clickableFrames.push(group);
+  scene.add(group);
+
+  // =========================
+  // ✅ 이 그림만 비추는 스포트라이트
+  //    (그림 그룹의 "자식"으로 넣어서 항상 그림 쪽을 향하도록)
+  // =========================
+  const spot = new THREE.SpotLight(
+    0xffffff,
+    9.0,          // 밝기 (너무 밝으면 3.0, 부족하면 5.0 정도)
+    15,           // 도달 거리
+    Math.PI / 6,  // 퍼짐 각도 (좁게 → 스팟 느낌)
+    0.4,
+    1
+  );
+
+  // 스포트라이트를 그룹 로컬 좌표로 배치
+  //  - 그림 위쪽 (y: picH/2 + 2)
+  //  - 그림에서 약간 앞쪽으로 튀어나오게 (z: 3)
+  spot.position.set(0, picH / 2 + 2, 3);
+
+  // 조명이 바라볼 타겟(그림 중심)을 그룹 안에 따로 만들어서 지정
+  const target = new THREE.Object3D();
+  target.position.set(0, 0, 0); // 그룹의 중심 ≈ 그림 중심
+  group.add(target);
+
+  spot.target = target;
+
+  // 중요: 스포트라이트도 그룹의 자식으로 넣기
+  group.add(spot);
+
+  // 필요하면 방향 확인용 헬퍼
+  // const helper = new THREE.SpotLightHelper(spot);
+  // scene.add(helper);
+}
+
+
+  // ===== 그림 경로, 제목, 설명 =====
+  const framesPerSide = 10;
+  const totalFrames = framesPerSide * 2; // 왼쪽+오른쪽 = 20장
+
+  const imagePaths = [
+    "./img/1.jpg",
+    "./img/2.jpg",
+    "./img/3.jpg",
+    "./img/4.jpg",
+    "./img/5.jpg",
+    "./img/6.jpg",
+    "./img/7.jpg",
+    "./img/8.jpg",
+    "./img/9.jpg",
+    "./img/10.jpg",
+    "./img/11.jpg",
+    "./img/12.jpg",
+    "./img/13.jpg",
+    "./img/14.jpg",
+    "./img/15.jpg",
+    "./img/16.jpg",
+    "./img/17.jpg",
+    "./img/18.jpg",
+    "./img/19.jpg",
+    "./img/20.jpg"
+  ];
+
+  const titles = [
+    "작품 1 제목","작품 2 제목","작품 3 제목","작품 4 제목","작품 5 제목",
+    "작품 6 제목","작품 7 제목","작품 8 제목","작품 9 제목","작품 10 제목",
+    "작품 11 제목","작품 12 제목","작품 13 제목","작품 14 제목","작품 15 제목",
+    "작품 16 제목","작품 17 제목","작품 18 제목","작품 19 제목","작품 20 제목"
+  ];
+
+  const descriptions = [
+    "작품 1 설명을 여기에 적어 주세요.",
+    "작품 2 설명을 여기에 적어 주세요.",
+    "작품 3 설명을 여기에 적어 주세요.",
+    "작품 4 설명을 여기에 적어 주세요.",
+    "작품 5 설명을 여기에 적어 주세요.",
+    "작품 6 설명을 여기에 적어 주세요.",
+    "작품 7 설명을 여기에 적어 주세요.",
+    "작품 8 설명을 여기에 적어 주세요.",
+    "작품 9 설명을 여기에 적어 주세요.",
+    "작품 10 설명을 여기에 적어 주세요.",
+    "작품 11 설명을 여기에 적어 주세요.",
+    "작품 12 설명을 여기에 적어 주세요.",
+    "작품 13 설명을 여기에 적어 주세요.",
+    "작품 14 설명을 여기에 적어 주세요.",
+    "작품 15 설명을 여기에 적어 주세요.",
+    "작품 16 설명을 여기에 적어 주세요.",
+    "작품 17 설명을 여기에 적어 주세요.",
+    "작품 18 설명을 여기에 적어 주세요.",
+    "작품 19 설명을 여기에 적어 주세요.",
+    "작품 20 설명을 여기에 적어 주세요."
+  ];
+
+  while (imagePaths.length < totalFrames) {
+    imagePaths.push(imagePaths[imagePaths.length - 1]);
+  }
+
+  const loader = new THREE.TextureLoader();
+  const textures = new Array(totalFrames);
+  let loadedCount = 0;
+
+  imagePaths.forEach((path, index) => {
+    loader.load(
+      path,
+      tex => {
+        tex.colorSpace = THREE.SRGBColorSpace ?? THREE.sRGBEncoding;
+        textures[index] = tex;
+        loadedCount++;
+        if (loadedCount === totalFrames) {
+          placeFrames();
+        }
+      },
+      undefined,
+      err => {
+        console.warn("이미지 로딩 실패:", path);
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 2;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#888";
+        ctx.fillRect(0, 0, 2, 2);
+        const dummy = new THREE.CanvasTexture(canvas);
+        textures[index] = dummy;
+
+        loadedCount++;
+        if (loadedCount === totalFrames) {
+          placeFrames();
+        }
+      }
+    );
+  });
+
+  // ===== 액자 배치 (양쪽 벽) =====
+  function placeFrames() {
+    const spacingZ = 8;
+    const startZ = -20;
+    const frameY = EYE_HEIGHT;
+    const wallX = corridorWidth / 2 - 0.1;
+
+    for (let i = 0; i < framesPerSide; i++) {
+      const z = startZ - i * spacingZ;
+
+      const texLeft  = textures[i];                 // 0~9  → 왼쪽
+      const texRight = textures[i + framesPerSide]; // 10~19 → 오른쪽
+
+      createFrame(texLeft,  i, -wallX, frameY, z, Math.PI / 2);
+      createFrame(texRight, i + framesPerSide,  wallX, frameY, z, -Math.PI / 2);
+    }
+  }
+
+  // ===== 키보드 (WASD) =====
+  const keys = {};
+  window.addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+  window.addEventListener("keyup",   e => keys[e.key.toLowerCase()] = false);
+
+  // ===== 마우스 시점 회전 =====
+  let isMouseDown = false;
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+  const mouseSensitivity = 0.002;
+
+  window.addEventListener("mousedown", e => {
+    isMouseDown = true;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  });
+
+  window.addEventListener("mouseup",   () => isMouseDown = false);
+  window.addEventListener("mouseleave", () => isMouseDown = false);
+
+  window.addEventListener("mousemove", e => {
+    if (!isMouseDown) return;
+
+    const dx = e.clientX - lastMouseX;
+    const dy = e.clientY - lastMouseY;
+
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+
+    yaw   -= dx * mouseSensitivity;
+    pitch -= dy * mouseSensitivity;
+
+    const maxPitch = Math.PI / 3;
+    if (pitch >  maxPitch) pitch =  maxPitch;
+    if (pitch < -maxPitch) pitch = -maxPitch;
+  });
+
+  function getForwardDir() {
+    const dir = new THREE.Vector3();
+    dir.x = Math.sin(yaw) * Math.cos(pitch);
+    dir.y = Math.sin(pitch);
+    dir.z = -Math.cos(yaw) * Math.cos(pitch);
+    return dir.normalize();
+  }
+
+  // ===== 카메라 이동 & 제한 =====
+  function updateCamera() {
+    const speed = 0.35;
+    const forward = getForwardDir();
+    const right = new THREE.Vector3()
+      .crossVectors(forward, new THREE.Vector3(0,1,0))
+      .normalize();
+
+    if (keys["w"]) camera.position.addScaledVector(forward,  speed);
+    if (keys["s"]) camera.position.addScaledVector(forward, -speed);
+    if (keys["a"]) camera.position.addScaledVector(right,   -speed);
+    if (keys["d"]) camera.position.addScaledVector(right,    speed);
+
+    camera.position.y = EYE_HEIGHT;
+
+    const halfW = corridorWidth / 2 - 1;
+    const nearZ = -1;
+    const farZ  = -corridorDepth + 1;
+
+    camera.position.x = Math.max(-halfW, Math.min(halfW, camera.position.x));
+    camera.position.z = Math.max(farZ, Math.min(nearZ, camera.position.z));
+
+    const lookTarget = new THREE.Vector3().copy(camera.position).add(forward);
+    camera.lookAt(lookTarget);
+  }
+
+  // ===== 오버레이 클릭 로직 =====
+  renderer.domElement.addEventListener("click", onClick, false);
+
+  function onClick(event) {
+    const rect = renderer.domElement.getBoundingClientRect();
+
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObjects(clickableFrames, true);
+    if (intersects.length === 0) return;
+
+    let obj = intersects[0].object;
+    while (obj && obj.parent && obj.userData.index === undefined) {
+      obj = obj.parent;
+    }
+    if (!obj || obj.userData.index === undefined) return;
+
+    const index = obj.userData.index;
+
+    overlay.classList.add("show");
+    detailImg.src = imagePaths[index];
+    detailTitle.textContent = titles[index] || `작품 ${index + 1}`;
+    detailDesc.textContent  = descriptions[index] || "";
+  }
+
+  detailClose.addEventListener("click", () => {
+    overlay.classList.remove("show");
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      overlay.classList.remove("show");
+    }
+  });
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) {
+      overlay.classList.remove("show");
+    }
+  });
+
+  // ===== 리사이즈 =====
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ===== 루프 =====
+  function animate() {
+  requestAnimationFrame(animate);
+  updateCamera();
+
+  // =========================
+  // ✅ 비디오 거리 기반 밝기 조절
+  // =========================
+  const dist = camera.position.distanceTo(endScreen.position);
+
+  // 먼 거리 / 가까운 거리 기준값
+  const FAR  = 70;   // 이보다 멀면 거의 어두움
+  const NEAR = 12;   // 이보다 가까우면 완전 밝음
+
+  let t = (FAR - dist) / (FAR - NEAR);
+  t = Math.max(0, Math.min(1, t)); // 0~1로 제한
+
+  // ✅ 어두움 → 밝음 부드럽게 보간
+  endVideoMat.opacity = 0.15 + t * 0.85;
+  // 결과: 0.15 ~ 1.0 사이
+
+  renderer.render(scene, camera);
+}
+
+  animate();
+</script>
+
+</body>
+</html>
